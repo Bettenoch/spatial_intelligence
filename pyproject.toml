@@ -1,0 +1,45 @@
+[project]
+name = "spatial-intelligence"
+version = "0.1.0"
+description = "Spatial intelligence routing backend"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi==0.111.0",
+    "uvicorn[standard]==0.30.1",
+    "websockets==12.0",
+    "python-multipart==0.0.9",
+
+    "osmnx==1.9.3",
+    "networkx==3.3",
+    "geopandas==0.14.4",
+    "shapely==2.0.4",
+    "pyproj==3.6.1",
+    "fiona==1.9.6",
+
+    "scikit-learn==1.5.0",
+    "scipy==1.13.0",
+    "numpy==1.26.4",
+    "pandas==2.2.2",
+
+    "httpx==0.27.0",
+    "ortools==9.10.4067",
+
+    "pydantic==2.7.1",
+    "pydantic-settings==2.3.1",
+    "python-dotenv==1.0.1",
+
+    "redis==5.0.4",
+    "hiredis==2.3.2",
+
+    "loguru==0.7.2",
+    "ujson==5.10.0",
+    "python-jose==3.3.0",
+    "anyio==4.4.0"
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest==8.2.2",
+    "pytest-asyncio==0.23.7"
+]
