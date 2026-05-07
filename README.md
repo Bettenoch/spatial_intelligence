@@ -1,8 +1,8 @@
-# GeoDispatch AI
+# GeoIntelligence
 
 ### Spatial Intelligence & Last-Mile Delivery Optimization Platform
 
-GeoDispatch AI is a real-time spatial analytics and logistics simulation platform designed to explore how GIS, graph theory, clustering algorithms, and route optimization can improve last-mile delivery operations in urban environments.
+Ths project is a real-time spatial analytics and logistics simulation platform designed to explore how GIS, graph theory, clustering algorithms, and route optimization can improve last-mile delivery operations in urban environments.
 
 The project simulates delivery operations in Nairobi using realistic road networks, spatial clustering, and intelligent dispatching strategies to demonstrate how transport and logistics companies reduce operational costs through route optimization and delivery batching.
 
