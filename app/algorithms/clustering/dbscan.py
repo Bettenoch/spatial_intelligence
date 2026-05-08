@@ -1,5 +1,5 @@
 """
-app/algorithms/clustering/dbscan.py
+algorithms/clustering/dbscan.py
 ─────────────────────────────────────────────────────────────────────────────
 DBSCAN (Density-Based Spatial Clustering of Applications with Noise)
 applied to GPS coordinates for order batching.
@@ -17,6 +17,7 @@ Implementation note:
 """
 from __future__ import annotations
 
+import math  # must be at top — used in _split_cluster
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -161,10 +162,7 @@ def _split_cluster(orders: List[Order], max_size: int) -> List[Cluster]:
 
     sub_clusters = []
     for label in range(n_sub):
-        sub_orders = [o for o, l in zip(orders, labels) if l == label]
+        sub_orders = [o for o, lbl in zip(orders, labels) if lbl == label]
         if sub_orders:
             sub_clusters.append(_make_cluster(sub_orders, algorithm="dbscan_kmeans_split"))
     return sub_clusters
-
-
-import math  # noqa: E402  (placed here to avoid circular at module level)
