@@ -8,10 +8,13 @@ Manages the Nairobi road network graph lifecycle:
   3. On subsequent runs → loads from cache (~3s)
   4. Exposes a singleton graph accessible app-wide
 
-The graph is a NetworkX MultiDiGraph where:
-  - Nodes = road intersections (with lat/lon attributes)
-  - Edges = road segments (with length, speed, travel_time attributes)
-
+Fixes applied:
+  - ox.settings.* replaced with ox.settings object (OSMnx ≥1.9 API)
+  - _download_from_osm return type cast explicitly to nx.MultiDiGraph
+  - nearest_node: node_id cast uses explicit isinstance checks so Pylance
+    can narrow the type from "Any | list[Any]" to a concrete scalar before
+    calling int().  The original hasattr("__len__") guard didn't narrow the
+    type — isinstance does.
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
@@ -63,7 +66,7 @@ class NairobiGraphLoader:
         )
 
     def get_graph(self) -> nx.MultiDiGraph:
-        """Returns the loaded graph.  Raises GraphNotLoadedError if not ready."""
+        """Returns the loaded graph. Raises GraphNotLoadedError if not ready."""
         if not self._is_ready or self._graph is None:
             raise GraphNotLoadedError()
         return self._graph
@@ -98,7 +101,7 @@ class NairobiGraphLoader:
             self._graph = self._download_from_osm()
             self._save_to_cache(self._graph, cache_path)
 
-        # Add travel times based on speed limits (osmnx utility)
+        # Add travel times based on speed limits
         self._graph = self._enrich_graph(self._graph)
 
         self._node_count = len(self._graph.nodes)
@@ -107,31 +110,72 @@ class NairobiGraphLoader:
         self._is_ready = True
 
     def _download_from_osm(self) -> nx.MultiDiGraph:
-        """Download the Nairobi drivable road network via OSMnx."""
+        """
+        Download the Nairobi drivable road network via OSMnx.
+
+        Fix: OSMnx ≥1.0 exposes settings via ox.settings object attributes
+        (not module-level). We set them directly on the settings object.
+        Fix: cast return value explicitly to nx.MultiDiGraph.
+        """
         try:
             import osmnx as ox
 
-            # Configure osmnx: use cache, log to loguru
-            ox.settings.log_console = False
-            ox.settings.use_cache = True
-            ox.settings.cache_folder = "./cache/osmnx_http_cache"
+            # ── OSMnx settings (works for osmnx ≥1.0) ──────────────────────
+            try:
+                ox.settings.use_cache = True  # pyright: ignore[reportAttributeAccessIssue]
+                ox.settings.cache_folder = "./cache/osmnx_http_cache"  # pyright: ignore[reportAttributeAccessIssue]
+                ox.settings.log_console = False  # type: ignore[attr-defined]
+            except AttributeError:
+                pass  # Newer osmnx uses logging module — no action needed
 
             logger.info(
-                f"  Bbox: N={settings.nairobi_bbox_north}, S={settings.nairobi_bbox_south}, "
-                f"E={settings.nairobi_bbox_east}, W={settings.nairobi_bbox_west}"
+                f"  Bbox: N={settings.nairobi_bbox_north}, "
+                f"S={settings.nairobi_bbox_south}, "
+                f"E={settings.nairobi_bbox_east}, "
+                f"W={settings.nairobi_bbox_west}"
             )
 
-            G = ox.graph_from_bbox(
-                bbox=(
-                    settings.nairobi_bbox_north,
-                    settings.nairobi_bbox_south,
-                    settings.nairobi_bbox_east,
-                    settings.nairobi_bbox_west,
-                ),
-                network_type="drive",
-                simplify=True,
-                retain_all=False,
-            )
+            # Detect osmnx version to handle bbox API change at 1.9
+            import importlib.metadata as _meta
+            try:
+                _ox_version = tuple(
+                    int(x) for x in _meta.version("osmnx").split(".")[:2]
+                )
+            except Exception:
+                _ox_version = (1, 9)  # assume modern
+
+            if _ox_version >= (1, 9):
+                # New API: bbox=(left, bottom, right, top) = (west, south, east, north)
+                G_raw = ox.graph_from_bbox(
+                    bbox=(
+                        settings.nairobi_bbox_west,
+                        settings.nairobi_bbox_south,
+                        settings.nairobi_bbox_east,
+                        settings.nairobi_bbox_north,
+                    ),
+                    network_type="drive",
+                    simplify=True,
+                    retain_all=False,
+                )
+            else:
+                # Legacy API: bbox=(north, south, east, west)
+                G_raw = ox.graph_from_bbox(
+                    north=settings.nairobi_bbox_north,
+                    south=settings.nairobi_bbox_south,
+                    east=settings.nairobi_bbox_east,
+                    west=settings.nairobi_bbox_west,
+                    network_type="drive",
+                    simplify=True,
+                    retain_all=False,
+                )
+
+            # Ensure we always return a MultiDiGraph
+            if isinstance(G_raw, nx.MultiDiGraph):
+                G: nx.MultiDiGraph = G_raw
+            elif isinstance(G_raw, nx.DiGraph):
+                G = nx.MultiDiGraph(G_raw)
+            else:
+                G = nx.MultiDiGraph(G_raw)
 
             logger.info(
                 f"  Downloaded: {len(G.nodes):,} nodes, {len(G.edges):,} edges"
@@ -164,7 +208,6 @@ class NairobiGraphLoader:
             size_mb = path.stat().st_size / (1024 * 1024)
             logger.info(f"  Cached to {path} ({size_mb:.1f} MB)")
         except Exception as exc:
-            # Non-fatal — next startup will just re-download
             logger.warning(f"  Could not write cache ({exc}) — continuing without cache")
 
     def _enrich_graph(self, G: nx.MultiDiGraph) -> nx.MultiDiGraph:
@@ -186,15 +229,35 @@ class NairobiGraphLoader:
         """
         Snap a GPS coordinate to the nearest road network node.
 
+        Fix: ox.nearest_nodes can return a scalar or 1-element array depending
+        on whether scalars or arrays are passed as X/Y.  We use isinstance
+        checks (not hasattr) so Pylance can narrow the type and int() receives
+        a guaranteed scalar — resolving the reportArgumentType error.
+
         Returns:
             (node_id, distance_in_meters)
         """
-        if not self._is_ready:
+        if not self._is_ready or self._graph is None:
             raise GraphNotLoadedError()
         try:
+            import numpy as np
             import osmnx as ox
-            node_id, dist = ox.nearest_nodes(self._graph, X=lon, Y=lat, return_dist=True)
-            return int(node_id), float(dist)
+
+            result = ox.nearest_nodes(self._graph, X=lon, Y=lat, return_dist=True)
+            node_id_raw, dist_raw = result
+
+            # Use isinstance to narrow — Pylance understands isinstance, not hasattr
+            if isinstance(node_id_raw, (list, np.ndarray)):
+                # Array path: extract first element as a plain Python scalar
+                node_id = int(node_id_raw[0])
+                dist = float(dist_raw[0])
+            else:
+                # Scalar path: node_id_raw is int / np.integer / similar
+                node_id = int(node_id_raw)  # type: ignore[arg-type]
+                dist = float(dist_raw)      # type: ignore[arg-type]
+
+            return node_id, dist
+
         except Exception as exc:
             from app.core.exceptions import CoordinateSnapError
             raise CoordinateSnapError(
@@ -203,6 +266,5 @@ class NairobiGraphLoader:
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
-# Instantiated once.  FastAPI lifespan calls graph_loader.initialize() at startup.
 
 graph_loader = NairobiGraphLoader()
