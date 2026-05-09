@@ -1,0 +1,55 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env.local
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Cache & data ──────────────────────────────────────────────────────────────
+# NOTE: cache/ is EXCLUDED from the image — it lives in a Docker volume instead
+cache/
+*.pkl
+*.cache
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+Thumbs.db
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.github/
+
+# ── Docs ──────────────────────────────────────────────────────────────────────
+*.md
+docs/
+
+# ── Docker files (don't nest Docker inside Docker image) ─────────────────────
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+nginx/
+
+# ── Secrets — NEVER bake real .env into image ─────────────────────────────────
+.env
+# .env.example is safe to include (it has no real secrets)
