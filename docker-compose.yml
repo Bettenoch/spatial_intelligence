@@ -1,0 +1,84 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart Nairobi Delivery Routing — Docker Compose
+#
+# LOCAL DEV:   docker compose up
+# VPS DEPLOY:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── FastAPI Backend ──────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nairobi_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      NAIROBI_GRAPH_CACHE_PATH: /app/cache/nairobi_graph.pkl
+    volumes:
+      - graph_cache:/app/cache
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - nairobi_net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: nairobi_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - nairobi_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Graph Preloader (one-shot init container) ─────────────────────────────────
+  preloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nairobi_preloader
+    env_file:
+      - .env
+    environment:
+      NAIROBI_GRAPH_CACHE_PATH: /app/cache/nairobi_graph.pkl
+    volumes:
+      - graph_cache:/app/cache
+    networks:
+      - nairobi_net
+    command: python scripts/preload_graph.py
+    restart: "no"
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  graph_cache:
+    driver: local
+  redis_data:
+    driver: local
+
+# ── Network ───────────────────────────────────────────────────────────────────
+networks:
+  nairobi_net:
+    driver: bridge
