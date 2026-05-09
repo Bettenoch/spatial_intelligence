@@ -110,7 +110,7 @@ def nearest_neighbour_tour(
     # Return to start (closed tour)
     total_dist += dist_matrix[current, start_idx]
 
-    return tour, round(total_dist, 4)
+    return tour, total_dist
 
 
 def build_euclidean_geojson(
