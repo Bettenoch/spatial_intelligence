@@ -19,7 +19,7 @@ import numpy as np
 from loguru import logger
 
 from app.models.order import Order, OrderType
-
+from app.core.graph_loader import graph_loader
 
 # ── Hotspot definitions ───────────────────────────────────────────────────────
 # (lat, lon, radius_km, weight, zone_name)
@@ -103,7 +103,7 @@ def generate_orders(
     Returns:
         List of Order objects ready for clustering.
     """
-    from app.core.graph_loader import graph_loader
+   
 
     orders: List[Order] = []
     snap_failures = 0
