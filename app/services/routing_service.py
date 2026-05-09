@@ -160,9 +160,14 @@ async def _route_street_network(
     # Close the loop back to driver start
     waypoint_tuples.append(waypoint_tuples[0])
 
-    geojson, distance_km, duration_min = (
-        await osrm_client.get_route_geometry_and_distance(waypoint_tuples)
-    )
+
+    try:
+        geojson, distance_km, duration_min = (
+            await osrm_client.get_route_geometry_and_distance(waypoint_tuples)
+        )
+    except Exception:
+        # OSRM down — fall back to Haversine
+        return await _route_haversine(cluster, driver, orders)
 
     naive_dist = _naive_distance(driver, orders)
     waypoints = _build_waypoints(all_coords, tour, orders)
