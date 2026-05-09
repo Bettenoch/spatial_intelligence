@@ -14,7 +14,7 @@ import numpy as np
 
 from app.models.driver import Driver
 from app.simulation.order_generator import DRIVER_NAMES, NAIROBI_HOTSPOTS
-
+from app.core.graph_loader import graph_loader
 
 # Driver depot zones — where riders start their shifts
 DRIVER_ZONES = [
@@ -40,7 +40,7 @@ def generate_drivers(count: int, snap_to_graph: bool = True) -> List[Driver]:
     Returns:
         List of Driver objects.
     """
-    from app.core.graph_loader import graph_loader
+   
 
     drivers: List[Driver] = []
     names = random.sample(DRIVER_NAMES, min(count, len(DRIVER_NAMES)))
