@@ -123,7 +123,7 @@ def nearest_neighbour_tour_haversine(
     # Return to start
     total_dist += dist_matrix[current, start_idx]
 
-    return tour, round(total_dist, 4)
+    return tour, total_dist
 
 
 def build_haversine_geojson(
@@ -166,4 +166,4 @@ def total_route_distance(ordered_coords: List[Tuple[float, float]]) -> float:
             ordered_coords[i][0], ordered_coords[i][1],
             ordered_coords[i + 1][0], ordered_coords[i + 1][1],
         )
-    return round(total, 4)
+    return total
