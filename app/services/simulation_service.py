@@ -3,26 +3,27 @@ services/simulation_service.py
 ─────────────────────────────────────────────────────────────────────────────
 The main simulation orchestrator.
 
-This is the conductor — it coordinates:
-  1. Order generation (already done in scenario_builder)
-  2. Broadcasting orders to the frontend one-by-one (animated pin drops)
-  3. DBSCAN clustering of orders
-  4. Assigning drivers to clusters
-  5. Computing routes for each cluster (in parallel)
-  6. Broadcasting routes and driver assignments
-  7. Simulating driver movement along routes
-  8. Updating and broadcasting metrics after each delivery
+Fixes applied:
+  1. Driver assignment: each cluster gets a UNIQUE driver. When there are
+     more clusters than drivers, we create virtual "clone" driver entries
+     instead of reusing the same driver object (which caused duplicate IDs
+     and one driver appearing to make all deliveries).
 
-All heavy computation runs in thread pools (via run_in_executor) so the
-event loop never blocks and WebSocket messages keep flowing.
+  2. Metrics: pass routing_method to compute_metrics so the naive baseline
+     uses the correct circuity factor for street_network mode.
+
+  3. DRIVER_MOVED events with (0,0) coordinates are rejected before
+     broadcasting to prevent map flicker / elements snapping to top-left.
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
 import asyncio
 import random
+from copy import deepcopy
 from datetime import datetime
 from typing import Dict, List
+from uuid import uuid4
 
 from loguru import logger
 
@@ -51,17 +52,9 @@ from app.websocket.manager import ws_manager
 
 
 async def run_simulation(state: SimulationState) -> SimulationState:
-    """
-    Execute the full simulation pipeline for a given state.
-
-    Args:
-        state: Pre-built SimulationState from scenario_builder
-
-    Returns:
-        Final state with all routes, clusters, and metrics populated.
-    """
     session_id = state.session_id
     started_at = datetime.utcnow()
+    method = RoutingMethod(state.config.routing_method)
 
     try:
         # ── Phase 1: Broadcast orders appearing on the map ────────────────
@@ -122,10 +115,9 @@ async def run_simulation(state: SimulationState) -> SimulationState:
 # ── Phase implementations ────────────────────────────────────────────────────
 
 async def _broadcast_orders(state: SimulationState) -> None:
-    """Stream orders to the frontend with a small delay between each."""
     session_id = state.session_id
     orders = list(state.orders.values())
-    random.shuffle(orders)  # randomise appearance order for visual effect
+    random.shuffle(orders)
 
     for order in orders:
         await ws_manager.broadcast(
@@ -139,18 +131,17 @@ async def _broadcast_orders(state: SimulationState) -> None:
                     zone=order.zone,
                     order_type=order.order_type,
                     estimated_prep_minutes=order.estimated_prep_minutes,
+                    restaurant_name=_pick_restaurant(order.zone, order.order_type),
                 ),
             ),
         )
-        await asyncio.sleep(0.15)  # 150ms between pin drops → cinematic effect
+        await asyncio.sleep(0.15)
 
 
 async def _run_clustering(state: SimulationState) -> SimulationState:
-    """Run DBSCAN in a thread pool and broadcast resulting clusters."""
     session_id = state.session_id
     orders = list(state.orders.values())
 
-    # Run blocking clustering in thread pool
     loop = asyncio.get_event_loop()
     clusters: Dict[str, Cluster] = await loop.run_in_executor(
         None,
@@ -165,14 +156,12 @@ async def _run_clustering(state: SimulationState) -> SimulationState:
     state.clusters = clusters
     state.metrics.clusters_formed = len(clusters)
 
-    # Update order status and cluster assignment
     for cluster in clusters.values():
         for order_id in cluster.order_ids:
             if order_id in state.orders:
                 state.orders[order_id].cluster_id = cluster.id
                 state.orders[order_id].status = OrderStatus.CLUSTERED
 
-    # Broadcast clusters to frontend
     for cluster in clusters.values():
         await ws_manager.broadcast(
             session_id,
@@ -197,23 +186,28 @@ async def _run_clustering(state: SimulationState) -> SimulationState:
 def _assign_drivers_to_clusters(state: SimulationState) -> SimulationState:
     """
     Greedy assignment: assign nearest available driver to each cluster.
+
+    FIX: When there are more clusters than physical drivers, we create
+    additional virtual driver entries (clones of the least-loaded driver)
+    so every cluster gets a UNIQUE driver_id. This prevents:
+      - One driver appearing to make 6+ deliveries
+      - Duplicate driver IDs in the legend
+      - Color collisions in the route network
     """
     from app.algorithms.distance.haversine import haversine_distance
 
-    drivers = list(state.drivers.values())
+    real_drivers = list(state.drivers.values())
     clusters = list(state.clusters.values())
 
-    # Sort clusters by size (largest first — prioritise big clusters)
+    # Sort clusters by size (largest first)
     clusters.sort(key=lambda c: -c.size)
 
-    available_drivers = list(drivers)
+    available_drivers = list(real_drivers)
+    assigned_count: Dict[str, int] = {d.id: 0 for d in real_drivers}
 
     for cluster in clusters:
-        if not available_drivers:
-            # More clusters than drivers — last driver takes remaining
-            driver = drivers[-1] if drivers else None
-        else:
-            # Find closest available driver to cluster centroid
+        if available_drivers:
+            # Pick nearest available driver to cluster centroid
             driver = min(
                 available_drivers,
                 key=lambda d: haversine_distance(
@@ -221,23 +215,41 @@ def _assign_drivers_to_clusters(state: SimulationState) -> SimulationState:
                 ),
             )
             available_drivers.remove(driver)
+            assigned_count[driver.id] = assigned_count.get(driver.id, 0) + 1
+        else:
+            # All real drivers are assigned — create a virtual clone
+            # Pick the least-loaded real driver as the template
+            template = min(real_drivers, key=lambda d: assigned_count.get(d.id, 0))
 
-        if driver:
-            cluster.driver_id = driver.id
-            driver.cluster_id = cluster.id
-            driver.assigned_orders = cluster.order_ids
-            driver.status = DriverStatus.ASSIGNED
+            # Clone with a fresh unique ID but same position/zone/name
+            new_id = f"drv_{uuid4().hex[:6]}"
+            driver = Driver(
+                id=new_id,
+                name=f"{template.name.split('.')[0]}. #{assigned_count.get(template.id, 0) + 1}",
+                lat=template.lat + random.uniform(-0.002, 0.002),
+                lon=template.lon + random.uniform(-0.002, 0.002),
+                zone=template.zone,
+                capacity=template.capacity,
+                road_node_id=template.road_node_id,
+            )
+            state.drivers[new_id] = driver
+            assigned_count[template.id] = assigned_count.get(template.id, 0) + 1
 
-            for order_id in cluster.order_ids:
-                if order_id in state.orders:
-                    state.orders[order_id].driver_id = driver.id
-                    state.orders[order_id].status = OrderStatus.ASSIGNED
+        # Assign cluster → driver
+        cluster.driver_id = driver.id
+        driver.cluster_id = cluster.id
+        driver.assigned_orders = cluster.order_ids
+        driver.status = DriverStatus.ASSIGNED
+
+        for order_id in cluster.order_ids:
+            if order_id in state.orders:
+                state.orders[order_id].driver_id = driver.id
+                state.orders[order_id].status = OrderStatus.ASSIGNED
 
     return state
 
 
 async def _compute_routes(state: SimulationState) -> SimulationState:
-    """Compute routes for all clusters in parallel, broadcast each as it completes."""
     session_id = state.session_id
     method = RoutingMethod(state.config.routing_method)
 
@@ -248,7 +260,7 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
             return None
         driver = state.drivers.get(driver_id)
         if not driver:
-            logger.warning(f"  No driver for cluster {cluster.id} — skipping")
+            logger.warning(f"  Driver {driver_id} not found — skipping")
             return None
 
         route = await compute_route(cluster, driver, state.orders, method)
@@ -256,7 +268,6 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
         driver.total_distance_km += route.total_distance_km
         driver.status = DriverStatus.EN_ROUTE
 
-        # Broadcast the computed route
         await ws_manager.broadcast(
             session_id,
             RouteComputedEvent(
@@ -265,6 +276,7 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
                     route_id=route.id,
                     cluster_id=cluster.id,
                     driver_id=driver.id,
+                    driver_name=driver.name,
                     method=str(method.value),
                     geojson=route.geojson or {},
                     total_distance_km=route.total_distance_km,
@@ -275,7 +287,6 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
             ),
         )
 
-        # Broadcast driver assignment
         await ws_manager.broadcast(
             session_id,
             DriverAssignedEvent(
@@ -291,7 +302,6 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
 
         return route
 
-    # Run all route computations concurrently
     tasks = [
         compute_and_broadcast(cluster)
         for cluster in state.clusters.values()
@@ -299,11 +309,12 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
     ]
     await asyncio.gather(*tasks)
 
-    # Update metrics after all routes computed
+    # Pass method so naive baseline uses correct circuity scaling
     state.metrics = compute_metrics(
         state.routes,
         len(state.orders),
         state.metrics,
+        method=method,
     )
     await _broadcast_metrics(state)
 
@@ -311,13 +322,8 @@ async def _compute_routes(state: SimulationState) -> SimulationState:
 
 
 async def _animate_deliveries(state: SimulationState) -> SimulationState:
-    """
-    Simulate driver movement along routes.
-    Broadcasts DRIVER_MOVED events at intervals to animate map icons.
-    Each order completed increments the deliveries counter.
-    """
     session_id = state.session_id
-    ANIMATION_STEPS = 10  # number of intermediate position broadcasts
+    ANIMATION_STEPS = 10
 
     for cluster in state.clusters.values():
         driver_id = cluster.driver_id
@@ -332,7 +338,6 @@ async def _animate_deliveries(state: SimulationState) -> SimulationState:
         if not route or not route.waypoints:
             continue
 
-        # Update order status to IN_TRANSIT
         for oid in cluster.order_ids:
             if oid in state.orders:
                 state.orders[oid].status = OrderStatus.IN_TRANSIT
@@ -341,7 +346,6 @@ async def _animate_deliveries(state: SimulationState) -> SimulationState:
         total_steps = len(waypoints) * ANIMATION_STEPS
 
         for wp_idx, wp in enumerate(waypoints):
-            # Interpolate between current and next waypoint
             next_wp = waypoints[wp_idx + 1] if wp_idx + 1 < len(waypoints) else wp
 
             for step in range(ANIMATION_STEPS):
@@ -350,12 +354,17 @@ async def _animate_deliveries(state: SimulationState) -> SimulationState:
                 interp_lon = wp.lon + (next_wp.lon - wp.lon) * t
                 progress = (wp_idx * ANIMATION_STEPS + step) / max(total_steps, 1)
 
+                # FIX: reject zero/invalid coordinates before broadcasting
+                if not (interp_lat and interp_lon) or (interp_lat == 0 and interp_lon == 0):
+                    continue
+
                 await ws_manager.broadcast(
                     session_id,
                     DriverMovedEvent(
                         session_id=session_id,
                         data=DriverMovedEvent.Data(
                             driver_id=driver.id,
+                            driver_name=driver.name,
                             lat=round(interp_lat, 6),
                             lon=round(interp_lon, 6),
                             progress_pct=round(progress, 3),
@@ -363,9 +372,8 @@ async def _animate_deliveries(state: SimulationState) -> SimulationState:
                         ),
                     ),
                 )
-                await asyncio.sleep(0.08)  # ~12.5 frames/second
+                await asyncio.sleep(0.08)
 
-            # Mark delivery complete when reaching a stop
             if wp.order_id and wp.order_id in state.orders:
                 order = state.orders[wp.order_id]
                 order.status = OrderStatus.DELIVERED
@@ -430,3 +438,35 @@ async def _broadcast_metrics(state: SimulationState) -> None:
             ),
         ),
     )
+
+
+# ── Restaurant name picker (for hover tooltips) ───────────────────────────────
+
+_RESTAURANTS: Dict[str, List[str]] = {
+    "CBD":         ["Java House CBD", "Chicken Inn OTC", "KFC Moi Avenue", "Steers CBD", "Pizza Inn"],
+    "Westlands":   ["The Alchemist", "Chicken Inn Westlands", "Artcaffe Westlands", "Burger Hut", "Sushi Platter"],
+    "Kilimani":    ["Pili Pili", "Mediterraneo", "Bistro 6", "The Local", "K1 Fry"],
+    "Lavington":   ["About Thyme", "Sippers", "Talisman", "Jungle Grill"],
+    "Karen":       ["Karen Blixen Coffee", "Talisman Karen", "Cultiva", "Brew Bistro Karen"],
+    "Parklands":   ["Habesha", "Swahili Plate", "Javas Parklands", "Mama Oliech"],
+    "Eastleigh":   ["Somali Kitchen", "City Plate", "Eastleigh Grill", "Royal Biryani"],
+    "Upper Hill":  ["Kaldis Coffee", "Javas Upper Hill", "Epicure", "Urban Eatery"],
+    "Kasarani":    ["Zen Garden", "Kasarani Grill", "Safari Inn", "Nandos Kasarani"],
+    "South C":     ["Smoke & Grill", "Nakumatt Junction Resto", "South C Eats"],
+    "Hurlingham":  ["Nairobi Java Hurlingham", "Grill House", "Pronto Hurlingham"],
+    "Rongai":      ["Rongai Jikos", "Roadside Grill", "Nakuru Point"],
+    "Roysambu":    ["Roysambu Kitchen", "Nandos Roysambu", "Westpoint Grill"],
+    "Pangani":     ["Pangani Grill", "Tasty Bites Pangani"],
+    "Lang'ata":    ["Carnivore", "Ndege View Grill", "Lang'ata Eats"],
+    "Milimani":    ["Cafe Maghreb", "Milimani Kitchen"],
+    "Muthaiga":    ["Muthaiga Country Club", "Patio Café"],
+    "Buruburu":    ["Buruburu Grill", "Mambo Kitchen", "Casa Bianca"],
+    "Githurai":    ["Githurai Grill", "Mama Africa", "Githurai Bites"],
+    "Ongata Rongai": ["Rongai Grill", "Safari Eats"],
+}
+_DEFAULT_RESTAURANTS = ["Nairobi Eats", "The Local Kitchen", "Quick Bites", "Urban Grill"]
+
+
+def _pick_restaurant(zone: str, order_type: str) -> str:
+    options = _RESTAURANTS.get(zone, _DEFAULT_RESTAURANTS)
+    return random.choice(options)
