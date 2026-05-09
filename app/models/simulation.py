@@ -53,8 +53,10 @@ class SimulationMetrics(BaseModel):
 
 class SimulationConfig(BaseModel):
     """Parameters chosen by the user before the simulation starts."""
-    order_count: int = Field(default=30, ge=5, le=60)
-    driver_count: int = Field(default=5, ge=1, le=8)
+
+    order_count: int = Field(default=30, ge=5, le=9999)
+    driver_count: int = Field(default=5, ge=1, le=9999)
+    
     routing_method: RoutingMethod = RoutingMethod.STREET_NETWORK
     scenario_label: str = "UberEats Nairobi — Friday 7PM"
 
