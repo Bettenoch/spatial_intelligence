@@ -3,10 +3,10 @@ websocket/events.py
 ─────────────────────────────────────────────────────────────────────────────
 Defines every event type streamed from the backend to connected frontends.
 
-Design: every event is a typed Pydantic model that serialises to a clean
-JSON envelope:  { "event": "ORDER_CREATED", "data": { … } }
-
-The frontend keys on the `event` field to decide how to update the map.
+Changes:
+  - OrderCreatedEvent.Data: added `restaurant_name` field for hover tooltips
+  - RouteComputedEvent.Data: added `driver_name` field for legend display
+  - DriverMovedEvent.Data:   added `driver_name` field for hover tooltips
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
@@ -40,6 +40,7 @@ class OrderCreatedEvent(BaseEvent):
         zone: str
         order_type: str
         estimated_prep_minutes: int
+        restaurant_name: str = ""   # ← NEW: shown on hover
 
     data: Data
 
@@ -81,8 +82,9 @@ class RouteComputedEvent(BaseEvent):
         route_id: str
         cluster_id: str
         driver_id: str
+        driver_name: str = ""    # ← NEW: shown in legend
         method: str
-        geojson: Dict[str, Any]          # GeoJSON LineString
+        geojson: Dict[str, Any]
         total_distance_km: float
         estimated_duration_minutes: float
         naive_distance_km: float
@@ -110,9 +112,10 @@ class DriverMovedEvent(BaseEvent):
 
     class Data(BaseModel):
         driver_id: str
+        driver_name: str = ""    # ← NEW: shown on hover
         lat: float
         lon: float
-        progress_pct: float              # 0.0 – 1.0
+        progress_pct: float
         current_order_id: Optional[str] = None
 
     data: Data
