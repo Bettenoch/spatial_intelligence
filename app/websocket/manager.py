@@ -10,6 +10,7 @@ Architecture:
   - Broadcast sends an event to all clients watching a session
 ─────────────────────────────────────────────────────────────────────────────
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,8 +59,15 @@ class ConnectionManager:
         Disconnected clients are silently removed.
         """
         connections = list(self._connections.get(session_id, set()))
+
+        # Log when broadcasting to zero clients (the bug)
         if not connections:
+            logger.warning(f"[{session_id}] BROADCAST TO 0 CLIENTS: {event.event}")
             return
+
+        logger.debug(
+            f"[{session_id}] Broadcasting {event.event} to {len(connections)} client(s)"
+        )
 
         payload = event.to_json()
         dead: List[WebSocket] = []
