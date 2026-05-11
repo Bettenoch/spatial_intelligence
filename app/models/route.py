@@ -29,13 +29,13 @@ class Route(BaseModel):
     id: str
     cluster_id: str
     driver_id: str
+    driver_name: str = ""           # ← ADD THIS TOO
     method: RoutingMethod
     waypoints: List[RouteWaypoint] = Field(default_factory=list)
-    # GeoJSON LineString geometry for the map
     geojson: Optional[Dict[str, Any]] = None
     total_distance_km: float = 0.0
     estimated_duration_minutes: float = 0.0
-    # Naive (unoptimised) distance for savings calculation
     naive_distance_km: float = 0.0
+    color: str = "#00ccff"          # ← AND THIS
 
     model_config = {"use_enum_values": True}
