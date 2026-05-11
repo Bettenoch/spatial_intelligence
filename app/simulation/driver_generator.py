@@ -3,6 +3,21 @@ simulation/driver_generator.py
 ─────────────────────────────────────────────────────────────────────────────
 Generates fake Uber Eats riders with realistic Nairobi starting positions.
 Drivers spawn near commercial hubs (restaurants, shops) — not in suburbs.
+
+FIX: Name deduplication — when count > len(DRIVER_NAMES), the old code
+appended "Driver N" suffixes. But random.sample with count=5 and 10 names
+was fine. The "#2" suffix visible in the UI came from the simulation_service
+calling generate_drivers twice (once in scenario_builder, once in the VRP
+setup), producing two sets of names that collide. We now:
+
+  1. Never use random.sample — instead use a deterministic shuffle so names
+     are consistent and don't collide if called twice with the same count.
+  2. Return a stable list: the Nth call with count=5 always returns the same
+     5 names (seeded by driver index, not random) so double-calls are
+     idempotent.
+  3. The fallback for count > 10 appends the zone name, not "#N", so if
+     you ever run 11+ drivers the legend reads "Brian K. (Rongai)" not
+     "Driver 11".
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
@@ -13,7 +28,7 @@ from typing import List
 import numpy as np
 
 from app.models.driver import Driver
-from app.simulation.order_generator import DRIVER_NAMES, NAIROBI_HOTSPOTS
+from app.simulation.order_generator import NAIROBI_HOTSPOTS
 from app.core.graph_loader import graph_loader
 
 # Driver depot zones — where riders start their shifts
@@ -28,6 +43,57 @@ DRIVER_ZONES = [
     (-1.2939, 36.8226, "Upper Hill"),
 ]
 
+# All available names — 10 unique entries.
+# These are used in index order (not random.sample) so the first `count`
+# names are always the same for a given count, making double-calls safe.
+_ALL_DRIVER_NAMES = [
+    "Brian K.",
+    "Wanjiru M.",
+    "Otieno D.",
+    "Aisha N.",
+    "Kamau J.",
+    "Njeri W.",
+    "Omondi P.",
+    "Fatuma A.",
+    "Mwangi T.",
+    "Kerubo S.",
+]
+
+# Keep the old export name so order_generator.py import still works
+DRIVER_NAMES = _ALL_DRIVER_NAMES
+
+
+def _unique_driver_names(count: int) -> List[str]:
+    """
+    Return `count` unique driver names.
+
+    For count ≤ 10: return the first `count` entries from _ALL_DRIVER_NAMES
+    (deterministic — no randomness — so a double-call returns the same names).
+
+    For count > 10: cycle through the list and append the depot zone name
+    to disambiguate (e.g. "Brian K. (Rongai)") instead of "Driver N".
+    """
+    if count <= len(_ALL_DRIVER_NAMES):
+        # Deterministic slice — always the same names for the same count.
+        # Using a fixed seed shuffle lets us vary ordering without randomness
+        # bleeding across calls.
+        rng = random.Random(42)
+        shuffled = _ALL_DRIVER_NAMES[:]
+        rng.shuffle(shuffled)
+        return shuffled[:count]
+
+    # More drivers than base names — extend with zone suffixes
+    names: List[str] = []
+    for i in range(count):
+        base = _ALL_DRIVER_NAMES[i % len(_ALL_DRIVER_NAMES)]
+        zone = DRIVER_ZONES[i % len(DRIVER_ZONES)][2]
+        if i < len(_ALL_DRIVER_NAMES):
+            names.append(base)
+        else:
+            # Suffix with zone to disambiguate (never "#N")
+            names.append(f"{base} ({zone})")
+    return names
+
 
 def generate_drivers(count: int, snap_to_graph: bool = True) -> List[Driver]:
     """
@@ -38,16 +104,10 @@ def generate_drivers(count: int, snap_to_graph: bool = True) -> List[Driver]:
         snap_to_graph:  If True, snaps starting position to road network.
 
     Returns:
-        List of Driver objects.
+        List of Driver objects with unique names.
     """
-   
-
     drivers: List[Driver] = []
-    names = random.sample(DRIVER_NAMES, min(count, len(DRIVER_NAMES)))
-    if count > len(names):
-        # If more drivers than names, add suffixed names
-        extras = [f"Driver {i+1}" for i in range(count - len(names))]
-        names.extend(extras)
+    names = _unique_driver_names(count)
 
     for i in range(count):
         # Pick a depot zone — spread drivers across city
