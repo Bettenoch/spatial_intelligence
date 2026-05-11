@@ -1,32 +1,26 @@
 """
-simulation/order_generator.py
+simulation/order_generator.py — UPDATED
 ─────────────────────────────────────────────────────────────────────────────
-Generates realistic fake delivery orders across Nairobi.
-
-Uses weighted hotspot zones so orders cluster in real commercial areas
-(CBD, Westlands, Kilimani) not in forests or highways.
-
-Each order is snapped to the nearest road node so all downstream
-routing operates on valid graph nodes.
+Changes:
+  - generate_orders now accepts a restaurants list
+  - Each order is assigned a random nearby restaurant
+  - restaurant_id, restaurant_name, restaurant_lat/lon stored on order
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from loguru import logger
 
 from app.models.order import Order, OrderType
+from app.models.restaurant import Restaurant
 from app.core.graph_loader import graph_loader
 
 # ── Hotspot definitions ───────────────────────────────────────────────────────
-# (lat, lon, radius_km, weight, zone_name)
-# Weight is proportional — higher = more orders generated here.
-
 NAIROBI_HOTSPOTS: List[Tuple[float, float, float, float, str]] = [
-    # lat         lon        radius_km  weight   zone
     (-1.2864,   36.8172,    0.8,        9.0,   "CBD"),
     (-1.2676,   36.8037,    0.6,        7.0,   "Westlands"),
     (-1.2921,   36.7826,    0.5,        6.0,   "Lavington"),
@@ -49,7 +43,6 @@ NAIROBI_HOTSPOTS: List[Tuple[float, float, float, float, str]] = [
     (-1.2443,   36.8955,    0.5,        3.0,   "Githurai"),
 ]
 
-# Pre-compute cumulative weights for fast sampling
 _WEIGHTS = [h[3] for h in NAIROBI_HOTSPOTS]
 _WEIGHT_TOTAL = sum(_WEIGHTS)
 _NORMALIZED_WEIGHTS = [w / _WEIGHT_TOTAL for w in _WEIGHTS]
@@ -68,17 +61,12 @@ DRIVER_NAMES = [
 
 
 def _sample_hotspot() -> Tuple[float, float, str]:
-    """Sample a GPS point from a weighted hotspot zone."""
     idx = np.random.choice(len(NAIROBI_HOTSPOTS), p=_NORMALIZED_WEIGHTS)
     lat_c, lon_c, radius_km, _, zone = NAIROBI_HOTSPOTS[idx]
-
-    # Gaussian noise — 1 degree ≈ 111 km
     lat_std = radius_km / 111.0
     lon_std = radius_km / (111.0 * abs(np.cos(np.radians(lat_c))))
-
     lat = float(np.random.normal(lat_c, lat_std))
     lon = float(np.random.normal(lon_c, lon_std))
-
     return lat, lon, zone
 
 
@@ -88,23 +76,41 @@ def _sample_order_type() -> OrderType:
     return random.choices(types, weights=weights, k=1)[0]
 
 
+def _assign_restaurant(
+    restaurants: List[Restaurant],
+    customer_lat: float,
+    customer_lon: float,
+) -> Optional[Restaurant]:
+    """
+    Assign the nearest restaurant to the customer location.
+    Uses simple Euclidean distance for speed (fine for assignment).
+    """
+    if not restaurants:
+        return None
+    best = min(
+        restaurants,
+        key=lambda r: (r.lat - customer_lat) ** 2 + (r.lon - customer_lon) ** 2,
+    )
+    return best
+
+
 def generate_orders(
     count: int,
+    restaurants: Optional[List[Restaurant]] = None,
     snap_to_graph: bool = True,
 ) -> List[Order]:
     """
     Generate `count` fake delivery orders distributed across Nairobi.
 
     Args:
-        count: Number of orders to generate (5–60)
-        snap_to_graph: If True, snaps each coordinate to the nearest
-                       road node in the loaded graph.
+        count:       Number of orders to generate (5–60)
+        restaurants: List of available restaurants to assign orders from.
+                     Each order is assigned the nearest restaurant.
+        snap_to_graph: If True, snaps customer coordinate to road network.
 
     Returns:
         List of Order objects ready for clustering.
     """
-   
-
     orders: List[Order] = []
     snap_failures = 0
 
@@ -120,13 +126,15 @@ def generate_orders(
                 node_id, dist = graph_loader.nearest_node(lat, lon)
                 G = graph_loader.get_graph()
                 node_data = G.nodes[node_id]
-                # Use the road-snapped coordinates
                 lat = float(node_data["y"])
                 lon = float(node_data["x"])
                 road_node_id = node_id
             except Exception as exc:
                 snap_failures += 1
                 logger.debug(f"  Snap failed for order {i}: {exc}")
+
+        # Assign nearest restaurant
+        rest = _assign_restaurant(restaurants or [], lat, lon)
 
         order = Order(
             lat=round(lat, 6),
@@ -135,16 +143,25 @@ def generate_orders(
             order_type=order_type,
             estimated_prep_minutes=prep_minutes,
             road_node_id=road_node_id,
+            # Restaurant assignment
+            restaurant_id=rest.id if rest else None,
+            restaurant_name=rest.name if rest else "",
+            restaurant_lat=rest.lat if rest else None,
+            restaurant_lon=rest.lon if rest else None,
+            restaurant_zone=rest.zone if rest else "",
+            restaurant_road_node_id=rest.road_node_id if rest else None,
         )
         orders.append(order)
 
     if snap_failures:
         logger.warning(f"  {snap_failures}/{count} orders used unsnapped coordinates")
 
-    logger.info(f"📦 Generated {len(orders)} orders across {len(set(o.zone for o in orders))} zones")
+    logger.info(
+        f"📦 Generated {len(orders)} orders across "
+        f"{len(set(o.zone for o in orders))} zones"
+    )
     return orders
 
 
 def orders_to_coordinate_array(orders: List[Order]) -> np.ndarray:
-    """Return Nx2 array of [lat, lon] for use in clustering algorithms."""
     return np.array([[o.lat, o.lon] for o in orders])
