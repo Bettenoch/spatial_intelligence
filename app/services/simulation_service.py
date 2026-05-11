@@ -1,14 +1,6 @@
 """
 services/simulation_service.py — WITH TIMING DIAGNOSTICS
-─────────────────────────────────────────────────────────────────────────────
-Added: _T0 tracking + per-phase timing logs so you can see exactly where
-the 15-second gap lives.
 
-Every log line that starts with ⏱ carries:
-  [sim_id] ⏱ +Xs  PHASE_NAME  (detail)
-
-where +Xs is seconds since the POST /api/simulate was received.
-─────────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations

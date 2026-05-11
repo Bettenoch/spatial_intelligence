@@ -8,14 +8,6 @@ Manages the Nairobi road network graph lifecycle:
   3. On subsequent runs → loads from cache (~3s)
   4. Exposes a singleton graph accessible app-wide
 
-Fixes applied:
-  - ox.settings.* replaced with ox.settings object (OSMnx ≥1.9 API)
-  - _download_from_osm return type cast explicitly to nx.MultiDiGraph
-  - nearest_node: node_id cast uses explicit isinstance checks so Pylance
-    can narrow the type from "Any | list[Any]" to a concrete scalar before
-    calling int().  The original hasattr("__len__") guard didn't narrow the
-    type — isinstance does.
-─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 

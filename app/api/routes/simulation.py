@@ -1,10 +1,7 @@
 """
 app/api/routes/simulation.py — UPDATED
-─────────────────────────────────────────────────────────────────────────────
-Changes:
-  - Validates restaurant_count (1–10)
-  - GET /simulation/{id} returns delivery_records for the table
-─────────────────────────────────────────────────────────────────────────────
+
+
 """
 from __future__ import annotations
 

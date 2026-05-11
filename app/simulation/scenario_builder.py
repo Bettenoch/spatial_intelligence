@@ -1,5 +1,5 @@
 """
-simulation/scenario_builder.py — UPDATED
+simulation/scenario_builder.py 
 ─────────────────────────────────────────────────────────────────────────────
 Changes:
   - Generates restaurants first

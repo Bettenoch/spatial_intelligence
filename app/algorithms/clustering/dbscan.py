@@ -1,23 +1,10 @@
 """
 algorithms/clustering/dbscan.py
-─────────────────────────────────────────────────────────────────────────────
-DBSCAN (Density-Based Spatial Clustering of Applications with Noise)
-applied to GPS coordinates for order batching.
 
-Why DBSCAN for delivery routing:
-  - No need to specify number of clusters upfront (unlike K-Means)
-  - Handles arbitrary cluster shapes (Nairobi roads aren't grid-like)
-  - Identifies noise points (isolated orders) — these become solo trips
-  - Works perfectly with GPS coordinates converted to metres
-
-Implementation note:
-  We project lat/lon to UTM Zone 37S (the correct UTM zone for Nairobi)
-  before running DBSCAN.  This gives us accurate metre-based distances.
-─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
-import math  # must be at top — used in _split_cluster
+import math 
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np

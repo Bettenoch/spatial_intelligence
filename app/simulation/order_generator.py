@@ -1,11 +1,7 @@
 """
-simulation/order_generator.py — UPDATED
-─────────────────────────────────────────────────────────────────────────────
-Changes:
-  - generate_orders now accepts a restaurants list
-  - Each order is assigned a random nearby restaurant
-  - restaurant_id, restaurant_name, restaurant_lat/lon stored on order
-─────────────────────────────────────────────────────────────────────────────
+simulation/order_generator.py 
+
+
 """
 from __future__ import annotations
 

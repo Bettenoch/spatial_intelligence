@@ -4,20 +4,7 @@ simulation/driver_generator.py
 Generates fake Uber Eats riders with realistic Nairobi starting positions.
 Drivers spawn near commercial hubs (restaurants, shops) — not in suburbs.
 
-FIX: Name deduplication — when count > len(DRIVER_NAMES), the old code
-appended "Driver N" suffixes. But random.sample with count=5 and 10 names
-was fine. The "#2" suffix visible in the UI came from the simulation_service
-calling generate_drivers twice (once in scenario_builder, once in the VRP
-setup), producing two sets of names that collide. We now:
 
-  1. Never use random.sample — instead use a deterministic shuffle so names
-     are consistent and don't collide if called twice with the same count.
-  2. Return a stable list: the Nth call with count=5 always returns the same
-     5 names (seeded by driver index, not random) so double-calls are
-     idempotent.
-  3. The fallback for count > 10 appends the zone name, not "#N", so if
-     you ever run 11+ drivers the legend reads "Brian K. (Rongai)" not
-     "Driver 11".
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
