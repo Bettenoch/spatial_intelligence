@@ -1,12 +1,13 @@
 """
-websocket/events.py
+websocket/events.py — UPDATED
 ─────────────────────────────────────────────────────────────────────────────
-Defines every event type streamed from the backend to connected frontends.
+New events added:
+  - RestaurantCreatedEvent  — places restaurant pins on the map
+  - DeliveryTableEvent      — sends full delivery record table at completion
 
-Changes:
-  - OrderCreatedEvent.Data: added `restaurant_name` field for hover tooltips
-  - RouteComputedEvent.Data: added `driver_name` field for legend display
-  - DriverMovedEvent.Data:   added `driver_name` field for hover tooltips
+Updated events:
+  - OrderCreatedEvent.Data  — now includes restaurant coords for route display
+  - DeliveryCompletedEvent.Data — includes timestamps
 ─────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
@@ -19,13 +20,28 @@ from pydantic import BaseModel, Field
 
 
 class BaseEvent(BaseModel):
-    """Root event envelope. All events extend this."""
     event: str
     session_id: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
     def to_json(self) -> str:
         return self.model_dump_json()
+
+
+# ── Restaurant events ─────────────────────────────────────────────────────────
+
+class RestaurantCreatedEvent(BaseEvent):
+    event: str = "RESTAURANT_CREATED"
+
+    class Data(BaseModel):
+        restaurant_id: str
+        name: str
+        lat: float
+        lon: float
+        zone: str
+        cuisine_type: str
+
+    data: Data
 
 
 # ── Order events ─────────────────────────────────────────────────────────────
@@ -40,7 +56,12 @@ class OrderCreatedEvent(BaseEvent):
         zone: str
         order_type: str
         estimated_prep_minutes: int
-        restaurant_name: str = ""   # ← NEW: shown on hover
+        restaurant_name: str = ""
+        restaurant_id: Optional[str] = None
+        restaurant_lat: Optional[float] = None
+        restaurant_lon: Optional[float] = None
+        restaurant_zone: str = ""
+        ordered_at: Optional[datetime] = None
 
     data: Data
 
@@ -82,7 +103,7 @@ class RouteComputedEvent(BaseEvent):
         route_id: str
         cluster_id: str
         driver_id: str
-        driver_name: str = ""    # ← NEW: shown in legend
+        driver_name: str = ""
         method: str
         geojson: Dict[str, Any]
         total_distance_km: float
@@ -112,11 +133,13 @@ class DriverMovedEvent(BaseEvent):
 
     class Data(BaseModel):
         driver_id: str
-        driver_name: str = ""    # ← NEW: shown on hover
+        driver_name: str = ""
         lat: float
         lon: float
         progress_pct: float
         current_order_id: Optional[str] = None
+        phase: str = "delivery"   # "pickup" | "delivery"
+        restaurant_name: str = ""
 
     data: Data
 
@@ -127,7 +150,15 @@ class DeliveryCompletedEvent(BaseEvent):
     class Data(BaseModel):
         order_id: str
         driver_id: str
+        driver_name: str = ""
+        restaurant_name: str = ""
+        restaurant_zone: str = ""
+        customer_zone: str = ""
         time_taken_minutes: float
+        distance_km: float = 0.0
+        ordered_at: Optional[datetime] = None
+        delivered_at: Optional[datetime] = None
+        algorithm: str = "street_network"
 
     data: Data
 
@@ -154,6 +185,32 @@ class MetricsUpdatedEvent(BaseEvent):
     data: Data
 
 
+# ── Delivery table event ──────────────────────────────────────────────────────
+
+class DeliveryRecord(BaseModel):
+    order_id: str
+    driver_name: str
+    restaurant_name: str
+    restaurant_zone: str
+    customer_zone: str
+    ordered_at: Optional[str] = None      # ISO string
+    delivered_at: Optional[str] = None    # ISO string
+    duration_minutes: Optional[float] = None
+    distance_km: float = 0.0
+    algorithm: str = "street_network"
+    status: str = "delivered"
+
+
+class DeliveryTableEvent(BaseEvent):
+    event: str = "DELIVERY_TABLE"
+
+    class Data(BaseModel):
+        records: List[DeliveryRecord]
+        total_count: int
+
+    data: Data
+
+
 # ── System events ─────────────────────────────────────────────────────────────
 
 class SimulationStartedEvent(BaseEvent):
@@ -163,6 +220,7 @@ class SimulationStartedEvent(BaseEvent):
         session_id: str
         order_count: int
         driver_count: int
+        restaurant_count: int = 0
         routing_method: str
         scenario_label: str
 
