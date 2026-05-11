@@ -1,31 +1,20 @@
 """
-services/simulation_service.py — FIXED
+services/simulation_service.py — WITH TIMING DIAGNOSTICS
 ─────────────────────────────────────────────────────────────────────────────
-Root cause of 0 deliveries:
+Added: _T0 tracking + per-phase timing logs so you can see exactly where
+the 15-second gap lives.
 
-  _animate_driver was crashing on EVERY task with:
-    TypeError: can't subtract offset-naive and offset-aware datetimes
+Every log line that starts with ⏱ carries:
+  [sim_id] ⏱ +Xs  PHASE_NAME  (detail)
 
-  The crash happened here:
-    elapsed_minutes = (delivered_time - order.ordered_at).total_seconds() / 60
-
-  delivered_time  = datetime.now(timezone.utc)  → timezone-AWARE
-  order.ordered_at = datetime.utcnow()           → timezone-NAIVE  (set in Order model)
-
-  Python refuses to subtract aware from naive.  The task raised immediately,
-  asyncio.gather() caught it silently (return_exceptions=True), and 0
-  deliveries were ever recorded.
-
-Fix:
-  _utc_now() now returns a NAIVE UTC datetime (no tzinfo) to match the
-  Order model's ordered_at field which uses datetime.utcnow().
-  All internal timestamps stay consistent — naive UTC throughout.
+where +Xs is seconds since the POST /api/simulate was received.
 ─────────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
@@ -63,28 +52,13 @@ from app.websocket.events import (
 from app.websocket.manager import ws_manager
 
 DRIVER_COLORS = [
-    "#00ccff",
-    "#FF6B35",
-    "#7fff00",
-    "#DDA0DD",
-    "#4ECDC4",
-    "#ffaa00",
-    "#ff4d6d",
-    "#85C1E9",
-    "#F7DC6F",
-    "#BB8FCE",
+    "#00ccff", "#FF6B35", "#7fff00", "#DDA0DD", "#4ECDC4",
+    "#ffaa00", "#ff4d6d", "#85C1E9", "#F7DC6F", "#BB8FCE",
 ]
 
 
 def _utc_now() -> datetime:
-    """
-    Return current UTC time as a NAIVE datetime (no tzinfo).
-
-    The Order model sets ordered_at via datetime.utcnow() which is naive.
-    All timestamps in this service must be naive to allow arithmetic like:
-        (delivered_time - order.ordered_at).total_seconds()
-    Mixing naive and aware datetimes raises TypeError in Python.
-    """
+    """Return current UTC time as a NAIVE datetime (no tzinfo)."""
     return datetime.utcnow()
 
 
@@ -92,23 +66,56 @@ def _driver_color(idx: int) -> str:
     return DRIVER_COLORS[idx % len(DRIVER_COLORS)]
 
 
+# ── Timing helper ─────────────────────────────────────────────────────────────
+
+def _ts(t0: float, label: str, session: str, detail: str = "") -> None:
+    """
+    Emit a timing log line.
+
+    Format:  [sim_xxx] ⏱ +12.34s  LABEL  (detail)
+
+    t0   — time.perf_counter() captured at the very start of run_simulation
+    """
+    elapsed = time.perf_counter() - t0
+    suffix = f"  ({detail})" if detail else ""
+    logger.info(f"[{session}] ⏱ +{elapsed:.2f}s  {label}{suffix}")
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
+
 async def run_simulation(state: SimulationState) -> SimulationState:
     speed = state.config.simulation_speed
     session = state.session_id
     config = state.config
     started_at = _utc_now()
 
-    logger.info(f"[{session}] Waiting for WebSocket client to connect...")
-    for i in range(60):  # 60 × 50ms = 3 seconds max wait
+    # ── T0: clock starts the moment run_simulation is entered ────────────────
+    t0 = time.perf_counter()
+    _ts(t0, "RUN_SIMULATION_ENTERED", session,
+        f"orders={len(state.orders)} drivers={len(state.drivers)} "
+        f"restaurants={len(state.restaurants)} method={config.routing_method}")
+
+    # ── Wait for WebSocket client ─────────────────────────────────────────────
+    _ts(t0, "WS_WAIT_START", session, "polling for client connection (max 3s)")
+    wait_start = time.perf_counter()
+
+    for i in range(200):  # 200 × 50ms = 10s max wait
         if ws_manager.connection_count(session) > 0:
-            logger.info(
-                f"[{session}] Client connected after {i * 50}ms — starting simulation"
-            )
+            waited_ms = (time.perf_counter() - wait_start) * 1000
+            _ts(t0, "WS_CLIENT_CONNECTED", session,
+                f"client arrived after {waited_ms:.0f}ms (poll #{i})")
             break
-        await asyncio.sleep(0.05)  # 50ms instead of 100ms
+        await asyncio.sleep(0.05)
     else:
-        logger.warning(f"[{session}] No client connected after 3s — proceeding anyway")
+        waited_ms = (time.perf_counter() - wait_start) * 1000
+        logger.warning(
+            f"[{session}] No client connected after {waited_ms:.0f}ms — proceeding anyway"
+        )
+        _ts(t0, "WS_TIMEOUT_PROCEEDING", session,
+            "all early events will broadcast to 0 clients")
+
     # ── Phase 0: Started ──────────────────────────────────────────────────────
+    _ts(t0, "PHASE_0_SIMULATION_STARTED_EVENT", session)
     await ws_manager.broadcast(
         session,
         SimulationStartedEvent(
@@ -125,6 +132,8 @@ async def run_simulation(state: SimulationState) -> SimulationState:
     )
 
     # ── Phase 1: Emit restaurants ─────────────────────────────────────────────
+    _ts(t0, "PHASE_1_RESTAURANTS_START", session,
+        f"emitting {len(state.restaurants)} restaurants")
     await ws_manager.broadcast(
         session,
         SimulationStatusEvent(
@@ -152,7 +161,11 @@ async def run_simulation(state: SimulationState) -> SimulationState:
         )
         await asyncio.sleep(0.05 / speed)
 
+    _ts(t0, "PHASE_1_RESTAURANTS_DONE", session)
+
     # ── Phase 2: Emit orders ──────────────────────────────────────────────────
+    _ts(t0, "PHASE_2_ORDERS_START", session,
+        f"emitting {len(state.orders)} orders")
     for order in state.orders.values():
         await ws_manager.broadcast(
             session,
@@ -176,8 +189,12 @@ async def run_simulation(state: SimulationState) -> SimulationState:
         )
         await asyncio.sleep(0.04 / speed)
 
+    _ts(t0, "PHASE_2_ORDERS_DONE", session)
+
     # ── Phase 3: Cluster ──────────────────────────────────────────────────────
     state.status = SimulationStatus.CLUSTERING
+    _ts(t0, "PHASE_3_CLUSTERING_START", session,
+        f"DBSCAN on {len(state.orders)} orders")
     await ws_manager.broadcast(
         session,
         SimulationStatusEvent(
@@ -188,9 +205,14 @@ async def run_simulation(state: SimulationState) -> SimulationState:
         ),
     )
 
+    cluster_start = time.perf_counter()
     clusters = _cluster_orders(state)
+    cluster_ms = (time.perf_counter() - cluster_start) * 1000
+
     state.clusters = clusters
     state.metrics.clusters_formed = len(clusters)
+    _ts(t0, "PHASE_3_CLUSTERING_DONE", session,
+        f"{len(clusters)} clusters in {cluster_ms:.0f}ms")
 
     for cluster in clusters.values():
         await ws_manager.broadcast(
@@ -218,6 +240,9 @@ async def run_simulation(state: SimulationState) -> SimulationState:
 
     # ── Phase 4: Assign drivers & compute routes ──────────────────────────────
     state.status = SimulationStatus.ROUTING
+    _ts(t0, "PHASE_4_ROUTING_START", session,
+        f"{len(clusters)} clusters → {len(state.drivers)} drivers "
+        f"method={config.routing_method}")
     await ws_manager.broadcast(
         session,
         SimulationStatusEvent(
@@ -242,6 +267,7 @@ async def run_simulation(state: SimulationState) -> SimulationState:
         cluster.driver_id = assigned_driver.id
 
     routes: Dict[str, Route] = {}
+    route_count = 0
 
     for driver in driver_list:
         driver_clusters = assignments[driver.id]
@@ -285,12 +311,21 @@ async def run_simulation(state: SimulationState) -> SimulationState:
                         ),
                     )
 
+            route_start = time.perf_counter()
             route = await compute_route(
                 cluster=cluster,
                 driver=driver,
                 orders=state.orders,
                 method=config.routing_method,
             )
+            route_ms = (time.perf_counter() - route_start) * 1000
+            route_count += 1
+
+            _ts(t0, f"ROUTE_{route_count}_COMPUTED", session,
+                f"driver={driver.name} cluster={cluster.zone_label!r} "
+                f"orders={cluster.size} dist={route.total_distance_km:.2f}km "
+                f"took={route_ms:.0f}ms")
+
             route = route.model_copy(
                 update={"color": color, "driver_name": driver.name}
             )
@@ -325,8 +360,13 @@ async def run_simulation(state: SimulationState) -> SimulationState:
             await _emit_metrics(session, state.metrics)
             await asyncio.sleep(0.1 / speed)
 
+    _ts(t0, "PHASE_4_ROUTING_DONE", session,
+        f"{route_count} routes computed total")
+
     # ── Phase 5: Animate deliveries ───────────────────────────────────────────
     state.status = SimulationStatus.ANIMATING
+    _ts(t0, "PHASE_5_ANIMATION_START", session,
+        f"{len(driver_list)} driver animation tasks")
     await ws_manager.broadcast(
         session,
         SimulationStatusEvent(
@@ -360,7 +400,6 @@ async def run_simulation(state: SimulationState) -> SimulationState:
 
     results = await asyncio.gather(*animation_tasks, return_exceptions=True)
 
-    # Log any unexpected task errors so they're never silently swallowed
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             logger.error(
@@ -368,13 +407,14 @@ async def run_simulation(state: SimulationState) -> SimulationState:
             )
 
     state.delivery_records = delivery_records
+    _ts(t0, "PHASE_5_ANIMATION_DONE", session,
+        f"{len(delivery_records)} deliveries recorded")
 
     # ── Phase 6: Complete ─────────────────────────────────────────────────────
     state.status = SimulationStatus.COMPLETED
     state.completed_at = _utc_now()
     duration = (_utc_now() - started_at).total_seconds()
 
-    # Sum delivery counts from the authoritative state dict
     total_deliveries = sum(d.deliveries_completed for d in state.drivers.values())
 
     state.metrics = compute_metrics(
@@ -416,6 +456,10 @@ async def run_simulation(state: SimulationState) -> SimulationState:
     )
 
     savings_pct = state.metrics.savings_percentage
+    _ts(t0, "PHASE_6_COMPLETE", session,
+        f"{len(delivery_records)} deliveries savings={savings_pct:.1f}% "
+        f"wall_clock={duration:.1f}s")
+
     logger.info(
         f"✅ Simulation {session} complete — "
         f"{len(delivery_records)} deliveries, {savings_pct:.1f}% savings"
@@ -606,12 +650,11 @@ async def _animate_driver(
                 await asyncio.sleep(0.12 / speed)
 
             # ── Mark delivered ────────────────────────────────────────────────
-            delivered_time = _utc_now()  # naive UTC — matches order.ordered_at
+            delivered_time = _utc_now()
             order.status = OrderStatus.DELIVERED
             order.delivered_at = delivered_time
             state.orders[order.id] = order
 
-            # FIX: both datetimes are now naive UTC — subtraction works
             elapsed_minutes = (delivered_time - order.ordered_at).total_seconds() / 60
 
             route_distance = (
@@ -655,7 +698,7 @@ async def _animate_driver(
             )
 
             driver.deliveries_completed += 1
-            state.drivers[driver.id] = driver  # write back so state dict is current
+            state.drivers[driver.id] = driver
 
             state.metrics = order_completed(state.metrics)
             await _emit_metrics(session, state.metrics)
@@ -666,7 +709,7 @@ async def _animate_driver(
     state.drivers[driver.id] = driver
 
     logger.info(
-        f"Driver {driver.name} finished — " f"{driver.deliveries_completed} deliveries"
+        f"Driver {driver.name} finished — {driver.deliveries_completed} deliveries"
     )
 
 
