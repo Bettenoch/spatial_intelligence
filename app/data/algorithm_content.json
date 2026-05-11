@@ -1,0 +1,233 @@
+{
+  "algorithms": [
+    {
+      "id": "euclidean",
+      "name": "Euclidean Distance",
+      "category": "distance",
+      "short_description": "Straight-line distance ignoring Earth's curvature",
+      "complexity": "O(1) per pair",
+      "formula": "d = √((x₂-x₁)² + (y₂-y₁)²) × 111",
+      "explanation": "Euclidean distance treats latitude and longitude as flat Cartesian coordinates. It's the simplest and fastest distance metric — just the straight line between two GPS points. We multiply by ~111 to convert degrees to kilometres.",
+      "pros": [
+        "Extremely fast — O(1) per pair",
+        "Zero external dependencies",
+        "Good for micro-distances under 500m",
+        "Useful as a baseline to compare against real routing"
+      ],
+      "cons": [
+        "Ignores Earth's curvature entirely",
+        "Increasingly inaccurate over longer distances",
+        "Draws straight lines through buildings and rivers",
+        "Not suitable for real-world routing decisions"
+      ],
+      "real_world_use": "Used inside clustering algorithms (like DBSCAN after UTM projection) where we need fast pairwise distances. Also used as the 'naive baseline' to show how much smarter routing saves.",
+      "nairobi_context": "For intra-city Nairobi deliveries (1–15km), Euclidean underestimates true road distance by 30–50% because roads curve around Karura Forest, the Nairobi River valleys, and the CBD one-way system.",
+      "learn_more": "https://en.wikipedia.org/wiki/Euclidean_distance"
+    },
+    {
+      "id": "haversine",
+      "name": "Haversine Formula",
+      "category": "distance",
+      "short_description": "Great-circle distance accounting for Earth's curvature",
+      "complexity": "O(1) per pair",
+      "formula": "a = sin²(Δφ/2) + cos φ₁ · cos φ₂ · sin²(Δλ/2)\nc = 2 · atan2(√a, √(1−a))\nd = R · c   where R = 6371 km",
+      "explanation": "The Haversine formula calculates the shortest distance between two points on the surface of a sphere (the Earth). It's accurate anywhere on the globe and accounts for the fact that longitude lines converge at the poles.",
+      "pros": [
+        "Accurate for any distance on Earth",
+        "No external dependencies — pure math",
+        "Standard formula used by GPS systems",
+        "Better than Euclidean for distances over 10km"
+      ],
+      "cons": [
+        "Still draws straight lines — ignores actual roads",
+        "Assumes a perfect sphere (Earth is slightly oblate)",
+        "Difference from Euclidean is <0.5% for Nairobi intra-city distances",
+        "Cannot account for one-way streets or road closures"
+      ],
+      "real_world_use": "Used for driver-to-cluster assignment (finding nearest driver), as a fast pre-filter before expensive OSRM routing, and for computing the 'naive' distance baseline in metrics.",
+      "nairobi_context": "For Nairobi distances under 20km, Haversine and Euclidean differ by less than 0.5%. The big improvement comes from street-network routing — not from Euclidean→Haversine.",
+      "learn_more": "https://en.wikipedia.org/wiki/Haversine_formula"
+    },
+    {
+      "id": "street_network",
+      "name": "Street Network Routing",
+      "category": "distance",
+      "short_description": "Real road distances via OSRM + OpenStreetMap",
+      "complexity": "O(V log V) per query (Dijkstra under the hood)",
+      "formula": "Solved by OSRM using pre-processed OpenStreetMap road graph\nwith contraction hierarchies for near-instant queries",
+      "explanation": "Street network routing finds the actual shortest path along real roads using the Nairobi OpenStreetMap road network. OSRM pre-processes the graph with contraction hierarchies, enabling sub-millisecond route queries for any two points in the city.",
+      "pros": [
+        "Uses real Nairobi streets including one-way restrictions",
+        "Accounts for actual road distances and travel times",
+        "OSRM responses include turn-by-turn geometry",
+        "Most accurate routing mode for real delivery planning"
+      ],
+      "cons": [
+        "Requires external OSRM API call (network latency ~50–200ms)",
+        "OSM data quality varies — some Nairobi backstreets are incomplete",
+        "Does not account for real-time traffic (static graph)",
+        "More expensive to compute than Haversine for simple distance checks"
+      ],
+      "real_world_use": "This is what Uber Eats, Bolt Food, and Glovo actually use in production. The combination of DBSCAN clustering + OSRM routing + OR-Tools VRP is the standard logistics stack.",
+      "nairobi_context": "Nairobi's circuity factor (road distance ÷ straight-line distance) is approximately 1.4× on average — but can reach 1.8× in the CBD due to one-way streets and the Uhuru Highway interchange.",
+      "learn_more": "http://project-osrm.org/"
+    },
+    {
+      "id": "dbscan",
+      "name": "DBSCAN Clustering",
+      "category": "clustering",
+      "short_description": "Density-based spatial clustering — no k required",
+      "complexity": "O(n log n) with spatial index",
+      "formula": "A point p is a core point if |N_ε(p)| ≥ MinPts\nwhere N_ε(p) = {q : dist(p,q) ≤ ε}",
+      "explanation": "DBSCAN groups nearby orders without needing to know how many groups to create. It expands clusters by finding dense neighbourhoods — any order within ε kilometres of a cluster gets added. Isolated orders become 'noise' and get their own solo delivery run.",
+      "pros": [
+        "No need to specify k (number of clusters) upfront",
+        "Handles arbitrary cluster shapes — not just spherical",
+        "Naturally identifies outlier orders as solo trips",
+        "Robust to varying order densities across Nairobi zones"
+      ],
+      "cons": [
+        "Sensitive to ε and MinPts parameters",
+        "Can merge clusters that should be separate in dense areas (CBD)",
+        "Slower than K-Means for very large datasets",
+        "Single large cluster can exceed driver capacity"
+      ],
+      "real_world_use": "Used by logistics platforms to batch nearby deliveries before routing. We project to UTM Zone 37S (metres) before running DBSCAN for accurate distance computation.",
+      "nairobi_context": "We use ε=1.5km and MinPts=2. This means orders within 1.5km of each other cluster together — appropriate for Nairobi where a rider can cover 1.5km in under 5 minutes.",
+      "learn_more": "https://en.wikipedia.org/wiki/DBSCAN"
+    },
+    {
+      "id": "kmeans",
+      "name": "K-Means Clustering",
+      "category": "clustering",
+      "short_description": "Partition orders into k clusters minimising variance",
+      "complexity": "O(n·k·i) where i = iterations",
+      "formula": "Minimise Σ Σ ||x - μₖ||²\n       k  x∈Cₖ",
+      "explanation": "K-Means divides orders into exactly k groups by iteratively assigning each order to the nearest cluster centroid and recomputing centroids. When you know driver count upfront, setting k = driver_count gives one cluster per driver.",
+      "pros": [
+        "Simple and extremely fast",
+        "Produces exactly k clusters — maps cleanly to k drivers",
+        "Predictable cluster sizes",
+        "Easy to understand and explain"
+      ],
+      "cons": [
+        "Must specify k upfront — but order volume fluctuates",
+        "Assumes spherical clusters — poor fit for linear road corridors",
+        "Sensitive to outliers (one Karen order pulls the Kilimani centroid)",
+        "May produce clusters that violate driver capacity"
+      ],
+      "real_world_use": "Used as a fallback when driver count is fixed and known. Also used inside DBSCAN as a sub-routine to split oversized clusters.",
+      "nairobi_context": "K-Means works better for Nairobi's planned zones (Karen, Runda, Muthaiga) than for the CBD where orders cluster organically along street corridors.",
+      "learn_more": "https://en.wikipedia.org/wiki/K-means_clustering"
+    },
+    {
+      "id": "dijkstra",
+      "name": "Dijkstra's Algorithm",
+      "category": "routing",
+      "short_description": "Classic single-source shortest path on road graph",
+      "complexity": "O((V + E) log V) with priority queue",
+      "formula": "d[v] = min(d[v], d[u] + w(u,v))\nfor all edges (u,v) in priority queue order",
+      "explanation": "Dijkstra's algorithm finds the shortest path from a source node to all other nodes in a weighted graph. It expands nodes in order of their current best-known distance, guaranteeing an optimal solution when all edge weights are non-negative.",
+      "pros": [
+        "Guaranteed optimal solution",
+        "Works on any weighted graph",
+        "Used as the baseline for all shortest-path comparisons",
+        "Already implemented in NetworkX — no custom code needed"
+      ],
+      "cons": [
+        "Explores all nodes — slow on large graphs without heuristic",
+        "O((V+E) log V) — Nairobi graph has ~50k nodes and ~120k edges",
+        "Does not use directional knowledge about the destination",
+        "A* is strictly faster for single-pair queries"
+      ],
+      "real_world_use": "Used as a NetworkX fallback when OSRM is unavailable. Also used to pre-compute all-pairs distance matrices for small clusters before passing to the VRP solver.",
+      "nairobi_context": "On the full Nairobi graph, a Dijkstra query typically explores 5,000–15,000 nodes. A* with Haversine heuristic explores ~500–2,000 nodes for the same query.",
+      "learn_more": "https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm"
+    },
+    {
+      "id": "astar",
+      "name": "A* Algorithm",
+      "category": "routing",
+      "short_description": "Heuristic shortest path — faster than Dijkstra",
+      "complexity": "O(E) in best case with perfect heuristic",
+      "formula": "f(n) = g(n) + h(n)\nwhere g(n) = cost so far, h(n) = Haversine heuristic",
+      "explanation": "A* extends Dijkstra with a heuristic function h(n) that estimates the remaining cost to the goal. By prioritising nodes that are both close and heading toward the destination, A* explores far fewer nodes than Dijkstra for the same optimal result.",
+      "pros": [
+        "Optimal like Dijkstra (with admissible heuristic)",
+        "Much faster than Dijkstra for single-pair queries",
+        "Haversine is a perfect admissible heuristic for road networks",
+        "4–10× speed improvement over Dijkstra on Nairobi graph"
+      ],
+      "cons": [
+        "Only faster for single source→destination (not all-pairs)",
+        "Requires node coordinates (osmnx provides these)",
+        "Heuristic quality determines speedup — bad heuristic = Dijkstra",
+        "More complex to implement correctly than Dijkstra"
+      ],
+      "real_world_use": "Used in production routing engines (Google Maps, HERE) as the core path-finding algorithm. We use it as the NetworkX fallback when OSRM is unavailable and speed matters.",
+      "nairobi_context": "For a query like CBD → Karen (~12km), Dijkstra explores ~18,000 nodes while A* explores ~1,200 nodes — a 15× speedup — while returning the identical optimal route.",
+      "learn_more": "https://en.wikipedia.org/wiki/A*_search_algorithm"
+    },
+    {
+      "id": "vrp",
+      "name": "Vehicle Routing Problem (VRP)",
+      "category": "routing",
+      "short_description": "Optimal multi-driver route assignment via OR-Tools",
+      "complexity": "NP-hard — OR-Tools uses metaheuristic search",
+      "formula": "Minimise Σ_k Σ_i Σ_j c_ij · x_ijk\nsubject to capacity and coverage constraints",
+      "explanation": "The VRP asks: given N orders and K drivers, find the minimum-cost assignment of orders to drivers and the optimal visit sequence for each driver. It's NP-hard in the general case — we use Google OR-Tools with Guided Local Search to find near-optimal solutions in milliseconds.",
+      "pros": [
+        "Jointly optimises all drivers simultaneously",
+        "Respects driver capacity constraints (max 6 orders)",
+        "OR-Tools finds near-optimal solutions in <5 seconds",
+        "This is what production logistics platforms actually use"
+      ],
+      "cons": [
+        "NP-hard — exact solution intractable for large instances",
+        "Quality depends on distance matrix accuracy (OSRM needed)",
+        "OR-Tools has a setup cost — overkill for <5 orders",
+        "Requires Google OR-Tools dependency"
+      ],
+      "real_world_use": "The VRP is the core optimisation in every serious delivery platform. Uber Eats, DHL, UPS, and Amazon all run variants of VRP solvers. The savings from VRP vs naive routing are 20–40% in dense urban environments.",
+      "nairobi_context": "For a typical Friday evening with 30 orders and 5 drivers, VRP reduces total distance from ~210km (naive separate trips) to ~130km — a 38% saving that translates directly to fuel cost and driver time.",
+      "learn_more": "https://en.wikipedia.org/wiki/Vehicle_routing_problem"
+    }
+  ],
+  "concepts": [
+    {
+      "id": "clustering",
+      "name": "Spatial Clustering",
+      "explanation": "Spatial clustering groups nearby delivery orders together so a single driver can fulfil multiple orders in one trip — the core of delivery batching. Without clustering, every order requires a separate trip from the depot.",
+      "why_it_matters": "Clustering is the single biggest lever for cost reduction. Grouping 4 orders in Westlands into one driver run vs 4 separate trips saves 3 return journeys — typically 15–25km and 45–75 minutes.",
+      "key_question": "How close is 'close enough' to batch together? The answer depends on driver capacity, time constraints, and order preparation times."
+    },
+    {
+      "id": "gis",
+      "name": "Geographic Information Systems (GIS)",
+      "explanation": "GIS is the science of capturing, storing, analysing, and visualising spatial data. In logistics, GIS provides the foundation for everything: road networks, zone polygons, coordinate systems, and spatial queries.",
+      "why_it_matters": "Without GIS, you can't snap GPS coordinates to roads, calculate real driving distances, or understand which neighbourhood an order belongs to. Every modern logistics platform is fundamentally a GIS application.",
+      "key_question": "How do we represent the real world as data that algorithms can reason about?"
+    },
+    {
+      "id": "coordinate_systems",
+      "name": "Coordinate Systems & Projections",
+      "explanation": "GPS coordinates (WGS84) measure angles on a sphere. For distance calculations in metres, we project to UTM (Universal Transverse Mercator) — a flat Cartesian system where distances are accurate. Nairobi sits in UTM Zone 37S (EPSG:32737).",
+      "why_it_matters": "Running DBSCAN on raw lat/lon produces incorrect clusters because 1 degree of latitude ≠ 1 degree of longitude in metres near the equator. Projecting to UTM first ensures the 1.5km epsilon is truly 1.5km.",
+      "key_question": "When should you work in degrees (WGS84) vs metres (UTM)?"
+    },
+    {
+      "id": "road_network_graph",
+      "name": "Road Network as a Graph",
+      "explanation": "A road network is modelled as a directed weighted graph: intersections are nodes, road segments are edges, and edge weights are distance or travel time. OSMnx downloads this graph from OpenStreetMap and represents it as a NetworkX MultiDiGraph.",
+      "why_it_matters": "Graph representation unlocks all of classical algorithms: Dijkstra, A*, BFS, shortest path, connected components. The Nairobi graph has ~50,000 nodes and ~120,000 edges.",
+      "key_question": "How do you efficiently find the shortest path through 50,000 intersections?"
+    },
+    {
+      "id": "circuity",
+      "name": "Road Circuity Factor",
+      "explanation": "Circuity is the ratio of actual road distance to straight-line distance. A circuity of 1.4 means you drive 40% more than the crow flies. Nairobi's average circuity is ~1.4× but reaches 1.8× in the CBD due to one-way systems and flyovers.",
+      "why_it_matters": "Using Haversine distance for dispatch decisions systematically underestimates real travel time. A delivery that looks 3km away might be 5km by road — enough to flip the optimal driver assignment.",
+      "key_question": "For which decisions is straight-line distance good enough, and where do you need real road distance?"
+    }
+  ]
+}
